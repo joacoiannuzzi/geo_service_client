@@ -6,3 +6,4 @@
 /target/protobuf_external/
 /target/scala-2.13/classes/
 /target/streams/
+.idea/
