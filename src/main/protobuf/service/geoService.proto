@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package service ;
+
+service GeoService {
+  rpc GetCountries (GetCountriesRequest) returns (GetCountriesReply);
+  rpc GetStatesOfCountry (GetStatesOfCountryRequest) returns (GetStatesOfCountryReply);
+  rpc GetCitiesOfState (GetCitiesOfStateRequest) returns (GetCitiesOfStateReply);
+  rpc GetLocationByIp (GetLocationByIpRequest) returns (GetLocationByIpReply);
+  rpc HealthCheck (HealthCheckReq) returns (HealthCheckRes);
+}
+
+message GetCountriesRequest {
+}
+
+message GetCountriesReply {
+  repeated string countries = 1;
+}
+
+message GetStatesOfCountryRequest {
+  string country = 1;
+}
+
+message GetStatesOfCountryReply {
+  repeated string states = 1;
+}
+
+message GetCitiesOfStateRequest {
+  string country = 1;
+  string state   = 2;
+}
+
+message GetCitiesOfStateReply {
+  repeated string cities = 1;
+}
+
+message GetLocationByIpRequest {
+  string ip = 1;
+}
+
+message GetLocationByIpReply {
+  string country = 1;
+  string state   = 2;
+}
+
+message HealthCheckReq {}
+message HealthCheckRes {}
+
+
+
