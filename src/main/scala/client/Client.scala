@@ -9,6 +9,7 @@ import service.geoService.{
   HealthCheckReq
 }
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -110,7 +111,10 @@ class Balancer(stubs: List[GeoServiceStub]) {
     }
   }
 
-  def run[T](f: GeoServiceStub => Future[T])(res: Try[T] => Unit): Unit = {
+  @tailrec
+  final def run[T](
+      f: GeoServiceStub => Future[T]
+  )(res: Try[T] => Unit): Unit = {
 
     if (healthyStubs.isEmpty) {
       System.err.println("ERROR :: All servers are down")
@@ -118,28 +122,22 @@ class Balancer(stubs: List[GeoServiceStub]) {
     }
 
     val available = stubs.zipWithIndex
-      .filter { case (s, i) =>
-        healthyStubs.contains(i)
-      }
-      .filterNot { case (s, i) =>
-        workingStubs.contains(i)
+      .find { case (_, i) =>
+        healthyStubs.contains(i) && !workingStubs.contains(i)
       }
 
     if (available.isEmpty) {
-      println("entered available is empty")
       check()
       run(f)(res)
-      return
-    }
 
-    val (stub, index) = available.head
-    workingStubs add index
-    val future = f(stub)
-    future.onComplete(res)
-    future.onComplete {
-      println("Completed")
-      workingStubs.remove(index)
-      return
+    } else {
+      val (stub, index) = available.get
+      workingStubs add index
+      val future = f(stub)
+      future.onComplete(res)
+      future.onComplete { _ =>
+        workingStubs remove index
+      }
     }
   }
 
