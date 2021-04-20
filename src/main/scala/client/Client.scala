@@ -1,6 +1,7 @@
 package client
 
-import client.Util.createStub
+import io.etcd.jetcd.common.exception.EtcdExceptionFactory
+import io.etcd.jetcd.{ByteSequence, Client}
 import io.grpc.ManagedChannelBuilder
 import org.rogach.scallop._
 import service.geoService.GeoServiceGrpc.GeoServiceStub
@@ -27,7 +28,7 @@ package object Util {
   }
 }
 
-object Client extends App {
+object Client2 extends App {
 
   class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val file = opt[String]()
@@ -51,12 +52,10 @@ object Client extends App {
       conf.ips.map(_.split(',').toList).getOrElse(List())
     }
 
-  val q = 3
-  val initialPort = 50_003
+  val stubs: Client = Client.builder().build()
+  val path: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
-  val stubs = (initialPort until initialPort + q).map(createStub).toList
-
-  val balancer = Balancer(stubs)
+  val balancer = Balancer(stubs.getKVClient().get(path).get().getKvs)
 
   ipList.foreach { ip =>
     balancer.run(_.getLocationByIp(GetLocationByIpRequest(ip))) {
