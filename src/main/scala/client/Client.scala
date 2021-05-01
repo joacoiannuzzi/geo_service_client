@@ -1,12 +1,13 @@
 package client
 
-import io.etcd.jetcd.common.exception.EtcdExceptionFactory
 import io.etcd.jetcd.{ByteSequence, Client}
 import io.grpc.ManagedChannelBuilder
 import org.rogach.scallop._
 import service.geoService.GeoServiceGrpc.GeoServiceStub
 import service.geoService._
 
+import java.nio.charset.Charset
+import java.util.stream.Collectors
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -15,20 +16,22 @@ import scala.concurrent.{Await, Future}
 import scala.io.Source
 import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
+import scala.jdk.CollectionConverters._
 
-package object Util {
-  def createStub(port: Int): GeoServiceStub = {
+object Client2 extends App {
+
+  def createStub(
+      address: String = "localhost",
+      port: Int = 50003
+  ): GeoServiceStub = {
     val builder =
-      ManagedChannelBuilder.forAddress("localhost", port)
+      ManagedChannelBuilder.forAddress(address, port)
 
     builder.usePlaintext()
     val channel = builder.build()
 
     GeoServiceGrpc.stub(channel)
   }
-}
-
-object Client2 extends App {
 
   class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val file = opt[String]()
@@ -52,10 +55,24 @@ object Client2 extends App {
       conf.ips.map(_.split(',').toList).getOrElse(List())
     }
 
-  val stubs: Client = Client.builder().build()
-  val path: ByteSequence = ByteSequence.from("service/geo".getBytes())
+//  val stubs: Client =
+//    Client.builder().endpoints("http://127.0.0.1:2379").build()
+//  val path: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
-  val balancer = Balancer(stubs.getKVClient().get(path).get().getKvs)
+//  private val kvs = stubs.getKVClient
+//    .get(path)
+//    .get
+//    .getKvs
+//    .stream
+//    .map[GeoServiceStub](kv => {
+//      val Array(address, port) =
+//        kv.getValue.toString(Charset.defaultCharset()).split(":")
+//      createStub(address, port.toInt)
+//    })
+//    .collect(Collectors.toList[GeoServiceStub])
+
+  private val stubs = (50_000 to 50_005).map(p => createStub(port = p)).toList
+  val balancer = Balancer(stubs)
 
   ipList.foreach { ip =>
     balancer.run(_.getLocationByIp(GetLocationByIpRequest(ip))) {
@@ -159,12 +176,11 @@ case class Balancer(stubs: List[GeoServiceStub]) {
         }
 
       available match {
-        case Some((stub, index)) => {
+        case Some((stub, index)) =>
           workingStubs add index
           val future = caller(stub)
           future.onComplete(_ => workingStubs remove index)
           future.onComplete(responder)
-        }
         case None => runAux(caller)(responder)
       }
     }
