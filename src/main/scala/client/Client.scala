@@ -1,18 +1,14 @@
 package client
 
-import io.etcd.jetcd.{ByteSequence, Client}
+import io.etcd.jetcd.{ByteSequence, Client, KV, Watch}
 import io.grpc.ManagedChannelBuilder
 import client.Util.createStub
 import io.etcd.jetcd.options.WatchOption
 import io.etcd.jetcd.watch.{WatchEvent, WatchResponse}
-import io.etcd.jetcd.{Client, Watch}
 import org.rogach.scallop._
 import service.geoService.GeoServiceGrpc.GeoServiceStub
 import service.geoService._
-import io.etcd.jetcd.ByteSequence
 
-import java.nio.charset.Charset
-import java.util.stream.Collectors
 import java.nio.charset.{Charset, StandardCharsets}
 import java.util.concurrent.CountDownLatch
 import scala.annotation.tailrec
@@ -27,18 +23,18 @@ import scala.jdk.CollectionConverters._
 
 object Client2 extends App {
 
-  def createStub(
-      address: String = "localhost",
-      port: Int = 50003
-  ): GeoServiceStub = {
-    val builder =
-      ManagedChannelBuilder.forAddress(address, port)
-
-    builder.usePlaintext()
-    val channel = builder.build()
-
-    GeoServiceGrpc.stub(channel)
-  }
+//  def createStub(
+//      address: String = "localhost",
+//      port: Int = 50003
+//  ): GeoServiceStub = {
+//    val builder =
+//      ManagedChannelBuilder.forAddress(address, port)
+//
+//    builder.usePlaintext()
+//    val channel = builder.build()
+//
+//    GeoServiceGrpc.stub(channel)
+//  }
 
   class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val file = opt[String]()
@@ -81,8 +77,8 @@ object Client2 extends App {
     case e: Exception =>
       throw new Nothing("Failed to retrieve any key.", e)
   }
-  val stubs = keyValueMap.values.map(createStub).toList
-
+//  val stubs = keyValueMap.values.map(createStub).toList
+  val stubs = keyValueMap.values.map(x=>createStub(x)).toList
   val balancer = Balancer(stubs)
 
   ipList.foreach { ip =>
@@ -109,9 +105,9 @@ object Client2 extends App {
 
 case class Balancer(stubs: List[GeoServiceStub]) {
 
-  val client = Client.builder().endpoints("http://localhost:2379").build()
-  val kvclient = client.getKVClient
-  val watchClient = client.getWatchClient
+  val client: Client = Client.builder().endpoints("http://localhost:2379").build()
+  val kvclient: KV = client.getKVClient
+  val watchClient: Watch = client.getWatchClient
   private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[Int]()
   var stubsMutable: ListBuffer[GeoServiceStub] = ListBuffer[GeoServiceStub]
@@ -160,9 +156,8 @@ case class Balancer(stubs: List[GeoServiceStub]) {
   }
 
 
-    def run[T](
-                caller: GeoServiceStub => Future[T]
-              )(responder: Try[T] => Unit): Unit = {
+    def run[T](caller: GeoServiceStub => Future[T])
+              (responder: Try[T] => Unit): Unit = {
       calls = calls + 1
 
       def runInside(
@@ -224,5 +219,4 @@ case class Balancer(stubs: List[GeoServiceStub]) {
       }
     }
   }
-
 }
