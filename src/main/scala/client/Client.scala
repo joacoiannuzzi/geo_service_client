@@ -1,5 +1,7 @@
 package client
 
+import io.etcd.jetcd.{ByteSequence, Client}
+import io.grpc.ManagedChannelBuilder
 import client.Util.createStub
 import io.etcd.jetcd.options.WatchOption
 import io.etcd.jetcd.watch.{WatchEvent, WatchResponse}
@@ -9,6 +11,8 @@ import service.geoService.GeoServiceGrpc.GeoServiceStub
 import service.geoService._
 import io.etcd.jetcd.ByteSequence
 
+import java.nio.charset.Charset
+import java.util.stream.Collectors
 import java.nio.charset.{Charset, StandardCharsets}
 import java.util.concurrent.CountDownLatch
 import scala.annotation.tailrec
@@ -19,10 +23,22 @@ import scala.concurrent.Future
 import scala.io.Source
 import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
+import scala.jdk.CollectionConverters._
 
+object Client2 extends App {
 
+  def createStub(
+      address: String = "localhost",
+      port: Int = 50003
+  ): GeoServiceStub = {
+    val builder =
+      ManagedChannelBuilder.forAddress(address, port)
 
-object GeoClient extends App {
+    builder.usePlaintext()
+    val channel = builder.build()
+
+    GeoServiceGrpc.stub(channel)
+  }
 
   class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val file = opt[String]()
@@ -198,15 +214,15 @@ case class Balancer(stubs: List[GeoServiceStub]) {
             healthyStubs.contains(i) && !workingStubs.contains(i)
           }
 
-        available match {
-          case Some((stub, index)) => {
-            workingStubs add index
-            val future = caller(stub)
-            future.onComplete(_ => workingStubs remove index)
-            future.onComplete(responder)
-          }
-          case None => runAux(caller)(responder)
-        }
+      available match {
+        case Some((stub, index)) =>
+          workingStubs add index
+          val future = caller(stub)
+          future.onComplete(_ => workingStubs remove index)
+          future.onComplete(responder)
+        case None => runAux(caller)(responder)
       }
     }
+  }
+
 }

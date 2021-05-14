@@ -5,7 +5,7 @@ version := "0.1"
 scalaVersion := "2.13.5"
 
 libraryDependencies ++= Seq(
-  "io.grpc" % "grpc-netty" % scalapb.compiler.Version.grpcJavaVersion,
+  "io.grpc" % "grpc-netty" % "1.4.0",
   "com.thesamet.scalapb" %% "scalapb-runtime-grpc" % scalapb.compiler.Version.scalapbVersion
 )
 
@@ -21,3 +21,4 @@ libraryDependencies ++= Seq(
 )
 
 libraryDependencies += "org.rogach" %% "scallop" % "4.0.2"
+libraryDependencies += "io.etcd" % "jetcd-core" % "0.5.4"
