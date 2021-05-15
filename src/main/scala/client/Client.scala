@@ -75,7 +75,7 @@ object Client2 extends App {
     })
   } catch {
     case e: Exception =>
-      throw new Nothing("Failed to retrieve any key.", e)
+      throw new RuntimeException("Failed to retrieve any key.", e)
   }
 //  val stubs = keyValueMap.values.map(createStub).toList
   val stubs = keyValueMap.values.map(x=>createStub(x)).toList
@@ -110,7 +110,7 @@ case class Balancer(stubs: List[GeoServiceStub]) {
   val watchClient: Watch = client.getWatchClient
   private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[Int]()
-  var stubsMutable: ListBuffer[GeoServiceStub] = ListBuffer[GeoServiceStub]
+  var stubsMutable: ListBuffer[GeoServiceStub] = ListBuffer()
   stubsMutable ++= stubs
   checkStubs()
 
@@ -134,6 +134,7 @@ case class Balancer(stubs: List[GeoServiceStub]) {
         event.getEventType match {
           case WatchEvent.EventType.PUT => stubsMutable += createStub(event.getKeyValue.getValue.toString(Charset.forName("UTF-8")))
           case WatchEvent.EventType.DELETE => stubsMutable -= createStub(event.getKeyValue.getValue.toString(Charset.forName("UTF-8")))
+          case WatchEvent.EventType.UNRECOGNIZED => None
         }
       })
     })
@@ -152,6 +153,9 @@ case class Balancer(stubs: List[GeoServiceStub]) {
         if (kvclient != null) kvclient.close()
         if (watchClient != null) watchClient.close()
       }
+    } catch {
+      case e: Exception =>
+        System.exit(1)
     }
   }
 
