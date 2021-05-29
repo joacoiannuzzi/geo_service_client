@@ -1,10 +1,10 @@
 package client
 
-import io.etcd.jetcd.{ByteSequence, Client, KV, Watch}
-import io.grpc.ManagedChannelBuilder
 import client.Util.createStub
-import io.etcd.jetcd.options.WatchOption
+import client.Utils.getIpList
+import io.etcd.jetcd.options.{GetOption, WatchOption}
 import io.etcd.jetcd.watch.{WatchEvent, WatchResponse}
+import io.etcd.jetcd.{ByteSequence, Client, KV, Watch}
 import org.rogach.scallop._
 import service.geoService.GeoServiceGrpc.GeoServiceStub
 import service.geoService._
@@ -19,67 +19,39 @@ import scala.concurrent.Future
 import scala.io.Source
 import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
-import scala.jdk.CollectionConverters._
+
+class ArgParser(arguments: Seq[String]) extends ScallopConf(arguments) {
+  val file = opt[String]()
+  val ips = trailArg[String](required = false)
+  verify()
+}
+
+object Utils {
+  def getIpList(args: ArgParser) = {
+    args.file
+      .map { path =>
+        val source = Source.fromFile(path)
+        val ips = source.getLines().toList
+        source.close()
+        ips
+      }
+      .getOrElse {
+        if (!args.ips.isSupplied) {
+          System.err.println("ERROR :: No ips supplied")
+          sys.exit(1)
+        }
+        args.ips.map(_.split(',').toList).getOrElse(List())
+      }
+  }
+}
 
 object Client2 extends App {
 
-//  def createStub(
-//      address: String = "localhost",
-//      port: Int = 50003
-//  ): GeoServiceStub = {
-//    val builder =
-//      ManagedChannelBuilder.forAddress(address, port)
-//
-//    builder.usePlaintext()
-//    val channel = builder.build()
-//
-//    GeoServiceGrpc.stub(channel)
-//  }
+  val argsParsed = new ArgParser(args)
 
-  class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
-    val file = opt[String]()
-    val ips = trailArg[String](required = false)
-    verify()
-  }
+  val ipList: List[String] = getIpList(argsParsed)
 
-  val conf = new Conf(args)
-
-  val ipList = conf.file
-    .map { path =>
-      val source = Source.fromFile(path)
-      val ips = source.getLines().toList
-      source.close()
-      ips
-    }
-    .getOrElse {
-      if (!conf.ips.isSupplied) {
-        System.err.println("ERROR :: No ips supplied")
-        sys.exit(1)
-      }
-      conf.ips.map(_.split(',').toList).getOrElse(List())
-    }
-
-  val client: Client = Client.builder().endpoints("http://localhost:2379").build()
-  val kvClient = client.getKVClient
-  val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
-
-  import io.etcd.jetcd.options.GetOption
-  val keyValueMap = mutable.Map[String, String]()
-
-  try {
-    val option = GetOption.newBuilder.withRange(key).build
-    val futureResponse = kvClient.get(key, option)
-    val response = futureResponse.get
-    response.getKvs.stream().map(kv =>{
-      keyValueMap.put(kv.getKey.toString(Charset.forName("UTF-8")), kv.getValue.toString(Charset.forName("UTF-8")))
-    })
-  } catch {
-    case e: Exception =>
-      throw new RuntimeException("Failed to retrieve any key.", e)
-  }
-//  val stubs = keyValueMap.values.map(createStub).toList
-  val stubs = keyValueMap.values.map(x=>createStub(x)).toList
-  val balancer = Balancer(stubs)
+  val balancer = Balancer()
 
   ipList.foreach { ip =>
     balancer.run(_.getLocationByIp(GetLocationByIpRequest(ip))) {
@@ -103,10 +75,35 @@ object Client2 extends App {
   balancer.await()
 }
 
-case class Balancer(stubs: List[GeoServiceStub]) {
+case class Balancer() {
 
-  val client: Client = Client.builder().endpoints("http://localhost:2379").build()
-  val kvclient: KV = client.getKVClient
+  val client: Client =
+    Client.builder().endpoints("http://localhost:2379").build()
+  val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
+
+  val kvClient: KV = client.getKVClient
+
+  val keyValueMap = mutable.Map[String, String]()
+
+  try {
+    val option = GetOption.newBuilder.withRange(key).build
+    val futureResponse = kvClient.get(key, option)
+    val response = futureResponse.get
+    response.getKvs
+      .stream()
+      .forEach(kv => {
+        keyValueMap.put(
+          kv.getKey.toString(Charset.forName("UTF-8")),
+          kv.getValue.toString(Charset.forName("UTF-8"))
+        )
+      })
+  } catch {
+    case e: Exception =>
+      throw new RuntimeException("Failed to retrieve any key.", e)
+  }
+  //  val stubs = keyValueMap.values.map(createStub).toList
+  val stubs = keyValueMap.values.map(x => createStub(x)).toList
+
   val watchClient: Watch = client.getWatchClient
   private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[Int]()
@@ -130,13 +127,21 @@ case class Balancer(stubs: List[GeoServiceStub]) {
     val listener = Watch.listener((response: WatchResponse) => {
       print("Watching for key=something")
 
-      response.getEvents.stream().map(event => {
-        event.getEventType match {
-          case WatchEvent.EventType.PUT => stubsMutable += createStub(event.getKeyValue.getValue.toString(Charset.forName("UTF-8")))
-          case WatchEvent.EventType.DELETE => stubsMutable -= createStub(event.getKeyValue.getValue.toString(Charset.forName("UTF-8")))
-          case WatchEvent.EventType.UNRECOGNIZED => None
-        }
-      })
+      response.getEvents
+        .stream()
+        .map(event => {
+          event.getEventType match {
+            case WatchEvent.EventType.PUT =>
+              stubsMutable += createStub(
+                event.getKeyValue.getValue.toString(Charset.forName("UTF-8"))
+              )
+            case WatchEvent.EventType.DELETE =>
+              stubsMutable -= createStub(
+                event.getKeyValue.getValue.toString(Charset.forName("UTF-8"))
+              )
+            case WatchEvent.EventType.UNRECOGNIZED => None
+          }
+        })
     })
     try {
       val watchOption = WatchOption.newBuilder().withPrefix(key).build()
@@ -150,7 +155,7 @@ case class Balancer(stubs: List[GeoServiceStub]) {
         if (client != null) client.close()
         if (watch != null) watch.close()
         if (watcher != null) watcher.close()
-        if (kvclient != null) kvclient.close()
+        if (kvClient != null) kvClient.close()
         if (watchClient != null) watchClient.close()
       }
     } catch {
@@ -159,59 +164,59 @@ case class Balancer(stubs: List[GeoServiceStub]) {
     }
   }
 
+  def run[T](
+      caller: GeoServiceStub => Future[T]
+  )(responder: Try[T] => Unit): Unit = {
+    calls = calls + 1
 
-    def run[T](caller: GeoServiceStub => Future[T])
-              (responder: Try[T] => Unit): Unit = {
-      calls = calls + 1
+    def runInside(
+        caller: GeoServiceStub => Future[T]
+    )(responder: Try[T] => Unit)(n: Int): Unit = {
 
-      def runInside(
-                     caller: GeoServiceStub => Future[T]
-                   )(responder: Try[T] => Unit)(n: Int): Unit = {
-
-        runAux(caller) {
-          case Failure(e) =>
-            if (n > 5) {
-              responses = responses + 1
-              responder(Failure(e))
-            } else runInside(caller)(responder)(n + 1)
-
-          case Success(value) =>
+      runAux(caller) {
+        case Failure(e) =>
+          if (n > 5) {
             responses = responses + 1
-            responder(Success(value))
-        }
-      }
+            responder(Failure(e))
+          } else runInside(caller)(responder)(n + 1)
 
-      runInside(caller)(responder)(0)
+        case Success(value) =>
+          responses = responses + 1
+          responder(Success(value))
+      }
     }
 
-    @tailrec
-    private final def runAux[T](
-                                 caller: GeoServiceStub => Future[T]
-                               )(responder: Try[T] => Unit): Unit = {
+    runInside(caller)(responder)(0)
+  }
 
-      if (System.currentTimeMillis() - lastCheck > 500) {
-        checkStubs()
-        lastCheck = System.currentTimeMillis()
+  @tailrec
+  private final def runAux[T](
+      caller: GeoServiceStub => Future[T]
+  )(responder: Try[T] => Unit): Unit = {
+
+    if (System.currentTimeMillis() - lastCheck > 500) {
+      checkStubs()
+      lastCheck = System.currentTimeMillis()
+    }
+
+    if (healthyStubs.isEmpty) {
+      if (System.currentTimeMillis() - timeSinceServersDown > 2000) {
+        System.err.println("ERROR :: All servers are down")
+        System.exit(1)
       }
+      if (timeSinceServersDown == 0) {
+        timeSinceServersDown = System.currentTimeMillis()
+      }
+      runAux(caller)(responder)
 
-      if (healthyStubs.isEmpty) {
-        if (System.currentTimeMillis() - timeSinceServersDown > 2000) {
-          System.err.println("ERROR :: All servers are down")
-          System.exit(1)
+    } else {
+
+      timeSinceServersDown = 0
+
+      val available = stubs.zipWithIndex
+        .find { case (_, i) =>
+          healthyStubs.contains(i) && !workingStubs.contains(i)
         }
-        if (timeSinceServersDown == 0) {
-          timeSinceServersDown = System.currentTimeMillis()
-        }
-        runAux(caller)(responder)
-
-      } else {
-
-        timeSinceServersDown = 0
-
-        val available = stubs.zipWithIndex
-          .find { case (_, i) =>
-            healthyStubs.contains(i) && !workingStubs.contains(i)
-          }
 
       available match {
         case Some((stub, index)) =>
