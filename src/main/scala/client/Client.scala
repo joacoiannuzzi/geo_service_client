@@ -1,12 +1,13 @@
 package client
 
+import client.BalancerUtils.getStubs
 import client.Util.createStub
 import client.Utils.getIpList
 import io.etcd.jetcd.options.{GetOption, WatchOption}
 import io.etcd.jetcd.watch.{WatchEvent, WatchResponse}
 import io.etcd.jetcd.{ByteSequence, Client, KV, Watch}
 import org.rogach.scallop._
-import service.geoService.GeoServiceGrpc.GeoServiceStub
+import service.geoService.GeoServiceGrpc.{GeoServiceStub, stub}
 import service.geoService._
 
 import java.nio.charset.{Charset, StandardCharsets}
@@ -16,7 +17,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
-import scala.io.Source
+import scala.io.{Source, StdIn}
 import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
 
@@ -72,53 +73,26 @@ object Client2 extends App {
     }
   }
 
-  balancer.await()
+  StdIn.readLine()
 }
 
 case class Balancer() {
 
   val client: Client =
     Client.builder().endpoints("http://localhost:2379").build()
-  val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
   val kvClient: KV = client.getKVClient
-
-  val keyValueMap = mutable.Map[String, String]()
-
-  try {
-    val option = GetOption.newBuilder.withRange(key).build
-    val futureResponse = kvClient.get(key, option)
-    val response = futureResponse.get
-    response.getKvs
-      .stream()
-      .forEach(kv => {
-        keyValueMap.put(
-          kv.getKey.toString(Charset.forName("UTF-8")),
-          kv.getValue.toString(Charset.forName("UTF-8"))
-        )
-      })
-  } catch {
-    case e: Exception =>
-      throw new RuntimeException("Failed to retrieve any key.", e)
-  }
-  //  val stubs = keyValueMap.values.map(createStub).toList
-  val stubs = keyValueMap.values.map(x => createStub(x)).toList
-
   val watchClient: Watch = client.getWatchClient
+
+  val stubs = getStubs(kvClient)
+
   private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[Int]()
+
   var stubsMutable: ListBuffer[GeoServiceStub] = ListBuffer()
   stubsMutable ++= stubs
+
   checkStubs()
-
-  private var lastCheck = System.currentTimeMillis()
-  private var timeSinceServersDown = 0L
-  private var calls = 0
-  private var responses = 0
-
-  def await(): Unit = {
-    while (calls != responses) print("") // without the print it doesn't work
-  }
 
   private def checkStubs(): Unit = {
     val key = ByteSequence.from("service/geo/", StandardCharsets.UTF_8)
@@ -143,12 +117,17 @@ case class Balancer() {
           }
         })
     })
+
     try {
       val watchOption = WatchOption.newBuilder().withPrefix(key).build()
       val watch: Watch = watchClient
       val watcher: Watch.Watcher = watch.watch(key, watchOption, listener)
-      try latch.await()
-      catch {
+      try {
+        println("before latch")
+        latch.await()
+        println("after latch")
+
+      } catch {
         case e: Exception =>
           System.exit(1)
       } finally {
@@ -167,7 +146,6 @@ case class Balancer() {
   def run[T](
       caller: GeoServiceStub => Future[T]
   )(responder: Try[T] => Unit): Unit = {
-    calls = calls + 1
 
     def runInside(
         caller: GeoServiceStub => Future[T]
@@ -176,12 +154,10 @@ case class Balancer() {
       runAux(caller) {
         case Failure(e) =>
           if (n > 5) {
-            responses = responses + 1
             responder(Failure(e))
           } else runInside(caller)(responder)(n + 1)
 
         case Success(value) =>
-          responses = responses + 1
           responder(Success(value))
       }
     }
@@ -194,38 +170,48 @@ case class Balancer() {
       caller: GeoServiceStub => Future[T]
   )(responder: Try[T] => Unit): Unit = {
 
-    if (System.currentTimeMillis() - lastCheck > 500) {
-      checkStubs()
-      lastCheck = System.currentTimeMillis()
+    val available = stubs.zipWithIndex
+      .find { case (_, i) =>
+        healthyStubs.contains(i) && !workingStubs.contains(i)
+      }
+
+    available match {
+      case Some((stub, index)) =>
+        workingStubs add index
+        val future = caller(stub)
+        future.onComplete(_ => workingStubs remove index)
+        future.onComplete(responder)
+      case None => runAux(caller)(responder)
     }
+  }
+}
 
-    if (healthyStubs.isEmpty) {
-      if (System.currentTimeMillis() - timeSinceServersDown > 2000) {
-        System.err.println("ERROR :: All servers are down")
-        System.exit(1)
-      }
-      if (timeSinceServersDown == 0) {
-        timeSinceServersDown = System.currentTimeMillis()
-      }
-      runAux(caller)(responder)
+object BalancerUtils {
 
-    } else {
+  def getStubs(kvClient: KV) = {
 
-      timeSinceServersDown = 0
+    val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
-      val available = stubs.zipWithIndex
-        .find { case (_, i) =>
-          healthyStubs.contains(i) && !workingStubs.contains(i)
-        }
+    val keyValueMap = mutable.Map[String, String]()
 
-      available match {
-        case Some((stub, index)) =>
-          workingStubs add index
-          val future = caller(stub)
-          future.onComplete(_ => workingStubs remove index)
-          future.onComplete(responder)
-        case None => runAux(caller)(responder)
-      }
+    try {
+      val option = GetOption.newBuilder.withRange(key).build
+      val futureResponse = kvClient.get(key, option)
+      val response = futureResponse.get
+      response.getKvs
+        .stream()
+        .forEach(kv => {
+          keyValueMap.put(
+            kv.getKey.toString(Charset.forName("UTF-8")),
+            kv.getValue.toString(Charset.forName("UTF-8"))
+          )
+        })
+    } catch {
+      case e: Exception =>
+        throw new RuntimeException("Failed to retrieve any key.", e)
     }
+    //  val stubs = keyValueMap.values.map(createStub).toList
+    val stubs = keyValueMap.values.map(x => createStub(x)).toList
+    stubs
   }
 }
