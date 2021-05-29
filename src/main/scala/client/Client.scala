@@ -107,8 +107,6 @@ case class Balancer() {
   val watchClient: Watch = client.getWatchClient
   private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[Int]()
-  var stubsMutable: ListBuffer[GeoServiceStub] = ListBuffer()
-  stubsMutable ++= stubs
   checkStubs()
 
   private var lastCheck = System.currentTimeMillis()
