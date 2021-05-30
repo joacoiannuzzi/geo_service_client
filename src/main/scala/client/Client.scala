@@ -1,27 +1,34 @@
 package client
 
 import client.BalancerUtils.getStubs
+import client.EtcdUtils.getEtcdClient
 import client.Util.createStub
 import client.Utils.getIpList
-import com.google.common.base.Utf8
 import io.etcd.jetcd.kv.GetResponse
 import io.etcd.jetcd.options.{GetOption, WatchOption}
 import io.etcd.jetcd.watch.{WatchEvent, WatchResponse}
 import io.etcd.jetcd.{ByteSequence, Client, KV, Watch}
 import org.rogach.scallop._
-import service.geoService.GeoServiceGrpc.{GeoServiceStub, stub}
+import service.geoService.GeoServiceGrpc.GeoServiceStub
 import service.geoService._
 
 import java.nio.charset.{Charset, StandardCharsets}
-import java.util.concurrent.{CompletableFuture, CountDownLatch}
 import scala.annotation.tailrec
 import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.io.{Source, StdIn}
 import scala.language.postfixOps
 import scala.util.{Failure, Success, Try}
+
+object EtcdUtils {
+  private val endpoint: String = sys.env("ETCD_ENDPOINT")
+
+  def getEtcdClient: Client = {
+    println(s"endpoint $endpoint")
+    Client.builder().endpoints(endpoint).build()
+  }
+}
 
 class ArgParser(arguments: Seq[String]) extends ScallopConf(arguments) {
   val file = opt[String]()
@@ -40,10 +47,21 @@ object Utils {
       }
       .getOrElse {
         if (!args.ips.isSupplied) {
-          System.err.println("ERROR :: No ips supplied")
-          sys.exit(1)
-        }
-        args.ips.map(_.split(',').toList).getOrElse(List())
+          System.err.println("No ips supplied, using defaults")
+          List(
+            "8.8.8.8",
+            "88.8.8.8",
+            "8.86.8.8",
+            "8.86.8.77",
+            "8.86.83.8",
+            "8.86.83.5",
+            "8.8.83.8",
+            "8.86.84.8",
+            "8.86.43.8",
+            "8.8.8.8",
+            "8.86.48.8"
+          )
+        } else args.ips.map(_.split(',').toList).getOrElse(List())
       }
   }
 }
@@ -79,8 +97,7 @@ object Client2 extends App {
 
 case class Balancer() {
 
-  val client: Client =
-    Client.builder().endpoints("http://localhost:2379").build()
+  val client: Client = getEtcdClient
   val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
   val kvClient: KV = client.getKVClient
@@ -88,9 +105,7 @@ case class Balancer() {
 
   val stubs = getStubs(kvClient)
 
-//  private val healthyStubs = mutable.Set[Int]()
   private val workingStubs = mutable.Set[String]()
-
 
   checkStubs()
 
@@ -98,31 +113,38 @@ case class Balancer() {
     val key = ByteSequence.from("service/geo/", StandardCharsets.UTF_8)
 
     val listener = Watch.listener((response: WatchResponse) => {
-      print(s"Watching for key = $response")
+      println(s"response = $response")
 
       response.getEvents
         .stream()
         .forEach(event => {
-          println("ASDFASDFASD")
-          println(event.getEventType)
 
           event.getEventType match {
             case WatchEvent.EventType.PUT =>
-              stubs.put(event.getKeyValue.getKey.toString(Charset.forName("UTF-8")), createStub(event.getKeyValue.getValue.toString(Charset.forName("UTF-8"))))
-            case WatchEvent.EventType.DELETE =>{
-              stubs.remove(event.getKeyValue.getKey.toString(Charset.forName("UTF-8")))
-              workingStubs.remove(event.getKeyValue.getKey.toString(Charset.forName("UTF-8")))
+              stubs.put(
+                event.getKeyValue.getKey.toString(Charset.forName("UTF-8")),
+                createStub(
+                  event.getKeyValue.getValue.toString(Charset.forName("UTF-8"))
+                )
+              )
+            case WatchEvent.EventType.DELETE => {
+              stubs.remove(
+                event.getKeyValue.getKey.toString(Charset.forName("UTF-8"))
+              )
+              workingStubs.remove(
+                event.getKeyValue.getKey.toString(Charset.forName("UTF-8"))
+              )
             }
             case WatchEvent.EventType.UNRECOGNIZED => None
           }
         })
+
+//      println(stubs)
     })
 
-    println("before watch")
     val watchOption = WatchOption.newBuilder().withPrefix(key).build()
     val watch: Watch = watchClient
     val watcher: Watch.Watcher = watch.watch(key, watchOption, listener)
-    println("after watch")
 
   }
 
@@ -160,6 +182,7 @@ case class Balancer() {
 
     available match {
       case Some((key, stub)) =>
+        println(s"using $key")
         workingStubs add key
         val future = caller(stub)
         future.onComplete(_ => workingStubs remove key)
@@ -173,10 +196,11 @@ object BalancerUtils {
   val key: ByteSequence = ByteSequence.from("service/geo".getBytes())
 
   def getStubs(kvClient: KV) = {
-    val keyValueMap = mutable.Map[String,String]()
+    val keyValueMap = mutable.Map[String, String]()
     try {
 
-      val option: GetOption = GetOption.newBuilder()
+      val option: GetOption = GetOption
+        .newBuilder()
         .withSortField(GetOption.SortTarget.KEY)
         .withSortOrder(GetOption.SortOrder.DESCEND)
         .withPrefix(key)
@@ -187,22 +211,23 @@ object BalancerUtils {
       val response: GetResponse = futureResponse.get();
 
       if (response.getKvs().isEmpty()) {
-        print("Failed to retrieve any key.");
+        println("Failed to retrieve any key.");
       }
 
       response.getKvs.forEach(x => {
-        keyValueMap.put(x.getKey.toString(Charset.forName("UTF-8")), x.getValue.toString(Charset.forName("UTF-8")))
+        keyValueMap.put(
+          x.getKey.toString(Charset.forName("UTF-8")),
+          x.getValue.toString(Charset.forName("UTF-8"))
+        )
       })
 
       println("Retrieved " + response.getKvs().size() + " keys.");
 
-
     } catch {
       case e: Exception => print("Failed to retrieve any key.");
     }
-    println(keyValueMap)
-    keyValueMap.map {
-      case (key, value) => (key, createStub(value))
+    keyValueMap.map { case (key, value) =>
+      (key, createStub(value))
     }
 
   }

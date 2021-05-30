@@ -22,3 +22,9 @@ libraryDependencies ++= Seq(
 
 libraryDependencies += "org.rogach" %% "scallop" % "4.0.2"
 libraryDependencies += "io.etcd" % "jetcd-core" % "0.5.4"
+
+enablePlugins(JavaAppPackaging)
+enablePlugins(DockerPlugin)
+
+mainClass in Compile := Some("client.Client2")
+packageName in Docker := "geo-service-client"
